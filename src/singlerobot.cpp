@@ -13,6 +13,7 @@
 #include "rosgraph_msgs/Clock.h"
 #include <string>
 #include "pathplanner.h"
+#include "coverage/path.h"
 
 //using namespace std;
 // This file will subscribe to IR data, Obstacle Sensor data and encoder data from Simulator and then plan the path and send the global data + bot data to coverage followed by receiving data from coverage.
@@ -24,7 +25,7 @@ const int X_MAX = 20;
 const int Y_MAX = 20;
 const int SCALE = 1; // Each cell of map[][] covers 1/SCALE on simulator
 // hence higher the scale, more refined the path generated.
-const double TOL = 1 / double(SCALE);
+const double TOL = 0.5 / double(SCALE);
 
 
 class swarmRobot
@@ -36,15 +37,24 @@ public:
 		n.getParam("ID",id);
          //id = 2;
     	n.getParam("NAME",botName);
-		odomTopic << "/swarmbot" << id << "/odom";
-		velTopic << "/swarmbot" << id << "/cmd_vel";
-		messageTopic << "/swarmbot" << id << "/message";
-		odomSub = n.subscribe<nav_msgs::Odometry>(odomTopic.str(),1000,&swarmRobot::robotCallback,this);
-		velPub = n.advertise<geometry_msgs::Twist>(velTopic.str(), 50);
+
+		std::stringstream odomTopic;
+        odomTopic << "/swarmbot" << id << "/odom";
+		std::stringstream velTopic;
+        velTopic << "/swarmbot" << id << "/cmd_vel";
+		std::stringstream messageTopic;
+        messageTopic << "/swarmbot" << id << "/message";
+        std::stringstream pathTopic;
+        pathTopic << "/path" << id;
+
+		odomSub = n.subscribe<nav_msgs::Odometry>(odomTopic.str(),1000,&swarmRobot::robotCallback,this);		
 		clockSub = n.subscribe<rosgraph_msgs::Clock>("/clock", 1000, &swarmRobot::timeCallback, this);
-		messagePub = n.advertise<singlerobot::message>(messageTopic.str(), 10);
-		coverageSub = n.subscribe("/coverage", 50, &swarmRobot::coverageCallback, this);
+		//coverageSub = n.subscribe("/coverage", 50, &swarmRobot::coverageCallback, this);
 		obstacleSub = n.subscribe("/obstacleList", 50, &swarmRobot::obstacleCallback, this);
+        pathSub = n.subscribe(pathTopic.str(), 50, &swarmRobot::pathCallback, this);
+
+        velPub = n.advertise<geometry_msgs::Twist>(velTopic.str(), 50);
+        messagePub = n.advertise<singlerobot::message>(messageTopic.str(), 10);
 
 		map = (int **) malloc(X_MAX * SCALE * sizeof(int *));
 
@@ -62,7 +72,8 @@ public:
 		obstacles_updated = false;
 		obstacles_set = false;
 		pos_set = false;
-		destination_set = false;
+		//destination_set = false;
+        path_set = false;
 	}
     ~swarmRobot() {
         for(int i = 0; i < X_MAX * SCALE; i++) {
@@ -83,18 +94,28 @@ public:
 	{
 		clockTime = msg;
 	}
-	void coverageCallback(const swarm_simulator::obstacleList msg) {
-        // std::cout << "coverageCallback called" << std::endl;
-		for(int i = 0; i < msg.obstacles.size(); ++i){
-			if(msg.obstacles[i].shape == id) {
-				destination_pos.position.x = msg.obstacles[i].x;
-				destination_pos.position.y = msg.obstacles[i].y;
-			}
-		}
-		destination_set = true;
+    void pathCallback(const coverage::path msg) {
+        path_set = true;
 
-        // std::cout << "coverageCallback exited" << std::endl;
-	}
+        coverage_path.clear();
+        for(int i = 0; i < msg.parray.size(); ++i){
+            coverage_path.push_back(std::pair<double, double>(msg.parray[i].x, msg.parray[i].y));
+        }
+    }
+
+	// void coverageCallback(const swarm_simulator::obstacleList msg) {
+ //        // std::cout << "coverageCallback called" << std::endl;
+	// 	for(int i = 0; i < msg.obstacles.size(); ++i){
+	// 		if(msg.obstacles[i].shape == id) {
+	// 			destination_pos.position.x = msg.obstacles[i].x;
+	// 			destination_pos.position.y = msg.obstacles[i].y;
+	// 		}
+	// 	}
+	// 	destination_set = true;
+
+ //        // std::cout << "coverageCallback exited" << std::endl;
+	// }
+
 	void obstacleCallback(const swarm_simulator::obstacleList msg) {
 
         // std::cout << "obstacleCallback called" << std::endl;
@@ -149,7 +170,7 @@ public:
         }
 
         Pose waypoint = current_pos;
-        std::vector<Point> path;        
+        std::vector<Point> path; //path between current_pos and destination
         Twist cmd_vel;
 
         while(ros::ok()) {
@@ -158,7 +179,7 @@ public:
             std::cout << "Publishing" << std::endl;
 
 
-            while(!obstacles_set || !pos_set  || !destination_set) {
+            while(!obstacles_set || !pos_set) {
                 std::cout << "Waiting for obstacle list" <<  std::endl;
                 ros::spinOnce();
                 loop_rate.sleep();
@@ -191,16 +212,15 @@ public:
                 obstacles_updated = false;
             }
 
-            //reached waypoint
-                if (!path.empty()) { //next waypoint available
-			if(current_pos.position.x > waypoint.position.x - TOL &&
-               current_pos.position.x < waypoint.position.x + TOL &&
-               current_pos.position.y > waypoint.position.y - TOL &&
-    	       current_pos.position.y < waypoint.position.y + TOL) { 
-                    path.pop_back();
-                    Point target = path.back();
-                    waypoint.position.x = (target.first / SCALE) - (X_MAX / 2);
-                    waypoint.position.y = (target.second / SCALE) - (Y_MAX / 2);
+            if (!path.empty()) { //next waypoint available
+			    if(current_pos.position.x > waypoint.position.x - TOL &&
+                    current_pos.position.x < waypoint.position.x + TOL &&
+                    current_pos.position.y > waypoint.position.y - TOL &&
+                    current_pos.position.y < waypoint.position.y + TOL) { //reached waypoint
+                        path.pop_back();
+                        Point target = path.back();
+                        waypoint.position.x = (target.first / SCALE) - (X_MAX / 2);
+                        waypoint.position.y = (target.second / SCALE) - (Y_MAX / 2);
 
                     // if(!path.empty()) { //might make things smoother
                     //   Point next = path.back();
@@ -209,20 +229,46 @@ public:
                     //   waypoint.orientation.w = cos(angle/2);
                     // }
                 }
-                }
-                else //reached destination
-                {
-                    std::cout << "Path empty" << std::endl;
-                    cmd_vel.angular.z = 0;
-                    cmd_vel.linear.x = 0;
-                    velPub.publish(cmd_vel);
-                    break;
-                }
+            }
+            else { //reached destination
+                // std::cout << "Path empty" << std::endl;
+                // cmd_vel.angular.z = 0;
+                // cmd_vel.linear.x = 0;
+                // velPub.publish(cmd_vel);
+                break;
+            }
             
             calculate_u_omega(current_pos, waypoint, cmd_vel);
             velPub.publish(cmd_vel);
 
             ros::spinOnce();
+            loop_rate.sleep();
+        }
+    }
+    void followPath()
+    {
+        ros::Rate loop_rate(500);
+
+        while(ros::ok())
+        {
+            ros::spinOnce();
+            if(path_set)
+                break;
+            loop_rate.sleep();
+        }
+
+        int i = 0;
+        int n = coverage_path.size();
+
+        while(ros::ok()){
+            ros::spinOnce();
+            destination_pos.orientation.x = coverage_path[i].first;
+            destination_pos.orientation.y = coverage_path[i].second;
+
+            run();
+
+            i++;
+            i %= n;
             loop_rate.sleep();
         }
     }
@@ -237,28 +283,31 @@ protected:
 	ros::NodeHandle n;
 	std::string botName;
 	//double posX,posY,posZ;
-	std::stringstream messageTopic, odomTopic;
+	//std::stringstream messageTopic, odomTopic;
 
 	int **map;
-	std::stringstream velTopic;
+	//std::stringstream velTopic;
 	ros::Publisher velPub;
-	ros::Subscriber coverageSub, obstacleSub;
+	ros::Subscriber pathSub, obstacleSub;
 
 	Pose current_pos;
 	Pose destination_pos;
 	bool obstacles_updated;
 	bool obstacles_set;
 	bool pos_set;
-	bool destination_set;
+    bool path_set;
+	//bool destination_set;
+
+    std::vector<std::pair<double, double> > coverage_path;
 };
 
 int main(int argc, char **argv)
 {
 
 	ros::init(argc, argv, "singlerobot");
-	swarmRobot bot;	
+	swarmRobot bot;
 
-	bot.run();
+	bot.followPath();
 
 	return 0;
 }
