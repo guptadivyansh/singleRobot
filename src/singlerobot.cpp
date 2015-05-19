@@ -34,8 +34,8 @@ public:
 	int id;
 	swarmRobot()
 	{
-		n.getParam("ID",id);
-         //id = 2;
+	n.getParam("ID",id);
+        //id = 0;
     	n.getParam("NAME",botName);
 
 		std::stringstream odomTopic;
@@ -75,7 +75,7 @@ public:
 		//destination_set = false;
         path_set = false;
 	}
-    ~swarmRobot() {
+    	~swarmRobot() {
         for(int i = 0; i < X_MAX * SCALE; i++) {
             free(map[i]);
         }
@@ -157,10 +157,11 @@ public:
 	{
 		printf("%lf %lf %lf\n",current_pos.position.x, current_pos.position.y, current_pos.position.z);
 	}
+
+
 	void run()
 	{
         ros::Rate loop_rate(50);
-
         while(ros::ok())
         {
             ros::spinOnce();
@@ -168,15 +169,15 @@ public:
                 break;
             loop_rate.sleep();
         }
-
         Pose waypoint = current_pos;
         std::vector<Point> path; //path between current_pos and destination
         Twist cmd_vel;
+	//std::cout << "Destination: (" << destination_pos.position.x << ", " << destination_pos.position.y << ")" << std::endl;
 
         while(ros::ok()) {
             messageFiller();
             messagePub.publish(msg);
-            std::cout << "Publishing" << std::endl;
+            //std::cout << "Publishing" << std::endl;
 
 
             while(!obstacles_set || !pos_set) {
@@ -184,8 +185,6 @@ public:
                 ros::spinOnce();
                 loop_rate.sleep();
             }
-
-            std::cout << "Reached here" << std::endl;
 
             if(obstacles_updated) { //find new path
 
@@ -204,10 +203,17 @@ public:
                 if(current_y >= Y_MAX * SCALE) current_y = Y_MAX * SCALE - 1;
 
                 path = AStar(map, X_MAX, Y_MAX, SCALE, Point(current_x, current_y), Point(destination_x, destination_y));
+		
+		if(!path.empty()) path.pop_back();
 
-    	       //waypoint = current_pos;
+		//std::cout << "Path:" << std::endl;
+		//for(int it = 0; it < path.size(); ++it) {
+			//std::cout << "(" << (path[it].first / SCALE) - (X_MAX / 2) << ", " << (path[it].second / SCALE) - (Y_MAX / 2) << ")" << std::endl;
+		//}
+		
+		//std::cout << "Found path of size " << path.size() << std::endl;
 
-                printMap(map, X_MAX, Y_MAX, SCALE);
+                //printMap(map, X_MAX, Y_MAX, SCALE);
 
                 obstacles_updated = false;
             }
@@ -217,17 +223,19 @@ public:
                     current_pos.position.x < waypoint.position.x + TOL &&
                     current_pos.position.y > waypoint.position.y - TOL &&
                     current_pos.position.y < waypoint.position.y + TOL) { //reached waypoint
+			Point target = path.back();
                         path.pop_back();
-                        Point target = path.back();
+                        
                         waypoint.position.x = (target.first / SCALE) - (X_MAX / 2);
                         waypoint.position.y = (target.second / SCALE) - (Y_MAX / 2);
+			//std::cout << "Waypoint: (" << waypoint.position.x << ", " << waypoint.position.y << ")" << std::endl;
 
-                    // if(!path.empty()) { //might make things smoother
-                    //   Point next = path.back();
-                    //   double angle = normalizeAngle(atan2(next.second - target.second, next.first - target.first));
-                    //   waypoint.orientation.z = sin(angle/2);
-                    //   waypoint.orientation.w = cos(angle/2);
-                    // }
+                    if(!path.empty()) { //might make things smoother
+                       Point next = path.back();
+                       double angle = normalizeAngle(atan2(next.second - target.second, next.first - target.first));
+                       waypoint.orientation.z = sin(angle/2);
+                       waypoint.orientation.w = cos(angle/2);
+                    }
                 }
             }
             else { //reached destination
@@ -237,14 +245,18 @@ public:
                 // velPub.publish(cmd_vel);
                 break;
             }
-            
+
+		
             calculate_u_omega(current_pos, waypoint, cmd_vel);
             velPub.publish(cmd_vel);
 
             ros::spinOnce();
             loop_rate.sleep();
         }
+	obstacles_updated = false;
+	obstacles_set = false;            
     }
+
     void followPath()
     {
         ros::Rate loop_rate(500);
@@ -262,9 +274,9 @@ public:
 
         while(ros::ok()){
             ros::spinOnce();
-            destination_pos.orientation.x = coverage_path[i].first;
-            destination_pos.orientation.y = coverage_path[i].second;
-
+            destination_pos.position.x = coverage_path[i].first;
+            destination_pos.position.y = coverage_path[i].second;
+	
             run();
 
             i++;
